@@ -1,0 +1,18 @@
+KHPAL GPS
+Copyright (C) 2026 MK_MANDOKHAIL (modifications)
+
+KHPAL GPS is a modified version of "GPS Setter" by @jqssun
+(https://github.com/jqssun/android-gps-setter, 2024-2025), which is itself based on
+"GPS Setter" by @Android1500 (https://github.com/Android1500/GPS-Setter, 2022-2023).
+
+Modifications made in KHPAL GPS (summary):
+ - renamed and rebranded (name, package com.khpalgps.zb, icon, About)
+ - location provider follows the one Android supplies (no forced GPS)
+ - new settings: per-provider accuracy, altitude, speed, MSL, horizontal/vertical accuracy,
+   random-location radius and interval; old accuracy / random-position / update-check removed
+ - map zoom buttons; key-free map tiles in the foss flavor
+
+This program is free software: you can redistribute it and/or modify it under the terms of the
+GNU General Public License as published by the Free Software Foundation, version 3 of the
+License. It is distributed WITHOUT ANY WARRANTY. The full licence text is in the file LICENSE.
+The original authors' copyright and licence notices must stay with every copy of this work.

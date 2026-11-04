@@ -1,0 +1,79 @@
+<resources>
+
+    <!-- Home -->
+    <string name="app_name">KHPAL GPS</string>
+    <string name="xposed_desc">KHPAL GPS – realistic location control for the Xposed framework.</string>
+    <string name="search">Search</string>
+    <string name="address">United States</string>
+    <string name="favorites">Favorites</string>
+    <string name="address_not_found">Address not found</string>
+    <string name="cant_save">Can\'t save</string>
+    <string name="location_set">Location set</string>
+    <string name="title">Location set notification</string>
+    <string name="des">Show notification when location is set</string>
+    <string name="location_unset">Location unset</string>
+    <string name="no_internet">No Internet</string>
+    <string name="getlocation_desc">Get current location</string>
+    <string name="addfavorite_desc">Add favorite</string>
+
+    <!-- Errors -->
+    <string name="error_xposed_module_missing">Xposed module is not enabled</string>
+    <string name="error_xposed_module_missing_desc">Enable this module in LSPosed Manager</string>
+
+    <!-- About -->
+    <string name="about">About</string>
+    <string name="about_dev">Developer: MK_MANDOKHAIL</string>
+    <string name="about_info">KHPAL GPS lets you choose where your device thinks it is. Pick a spot on the map and the Xposed module delivers it to the apps you select, with natural live variation: separate accuracy for the GPS, network and fused providers, adjustable altitude, speed and MSL altitude, custom horizontal and vertical accuracy, and optional random drift inside a radius you set.
+
+Built for app developers, testers and privacy-minded users. Please use it responsibly and respect local laws and the rules of the apps you use.
+
+KHPAL GPS is a modified version of GPS Setter by @jqssun, licensed under GPL-3.0. The original licence and copyright notices are kept in the LICENSE and NOTICE files.</string>
+
+    <!-- Update -->
+    <string name="download_manager_description">Downloading update</string>
+    <string name="update_button">Update</string>
+    <string name="update_available">Update available</string>
+    <string name="bs_update_download_failed">Failed</string>
+
+
+    <!-- Dialog -->
+    <string name="add_fav_dialog_title">Add favorite</string>
+    <string name="dialog_button_add">Add</string>
+    <string name="location_not_select">Location not selected</string>
+    <string name="save">Save</string>
+
+    <!-- SettingActivity -->
+    <string name="xposed">Xposed</string>
+    <string name="settings">Settings</string>
+    <string name="preference_category_general">General</string>
+    <string name="enter_valid_input">Enter a valid number</string>
+    <string name="delete_favorite_item">Delete favorite</string>
+    <string name="title_activity_settings">Settings</string>
+    <string name="enable_joystick">Use joystick</string>
+    <string name="enable_joystick_summary">Control your location with a joystick (experimental)</string>
+    <string name="advanced_hook">Hook system location</string>
+    <string name="advanced_summary">Hook system for better location setting (reboot required)</string>
+    <string name="drawer_open">Open</string>
+    <string name="drawer_close">Close</string>
+    <string name="app_update_failed">Update failed</string>
+    <string name="dark_theme">Dark theme</string>
+
+    <!-- Xposed value settings -->
+    <string name="pref_gps_accuracy">GPS accuracy</string>
+    <string name="pref_network_accuracy">Network accuracy</string>
+    <string name="pref_fused_accuracy">Fused accuracy</string>
+    <string name="pref_altitude">Altitude</string>
+    <string name="pref_speed">Speed</string>
+    <string name="pref_horizontal_accuracy">Horizontal accuracy</string>
+    <string name="pref_vertical_accuracy">Vertical accuracy</string>
+    <string name="pref_msl">MSL altitude</string>
+    <string name="pref_random_radius">Randomize location</string>
+    <string name="pref_random_interval">Randomize location interval</string>
+    <string name="pref_not_set">Not set</string>
+    <string name="dialog_set">Set</string>
+    <string name="dialog_cancel">Cancel</string>
+    <string name="dialog_clear">Clear</string>
+    <string name="zoom_in_desc">Zoom in</string>
+    <string name="zoom_out_desc">Zoom out</string>
+
+</resources>
