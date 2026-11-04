@@ -1,0 +1,97 @@
+name: Build KHPAL GPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Also publish the APKs to GitHub Releases'
+        type: boolean
+        default: false
+  push:
+    branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Only needed when you uploaded the project as a .zip (phone-friendly way).
+      # Unpacks it into the repository once, then deletes the zip.
+      - name: Unpack project zip (first run only)
+        run: |
+          if [ ! -f gradlew ]; then
+            ZIP=$(find . -name '*.zip' -not -path './.git/*' | head -n1)
+            if [ -z "$ZIP" ]; then
+              echo "ERROR: no project files and no .zip found. Upload khpalGps.zip to the repository first."
+              exit 1
+            fi
+            echo "Using $ZIP"
+            mkdir -p /tmp/unz
+            unzip -q -o "$ZIP" -d /tmp/unz
+            SRC=$(dirname "$(find /tmp/unz -maxdepth 3 -name gradlew | head -n1)")
+            rsync -a --exclude='.github' "$SRC"/ ./
+            rm -f "$ZIP"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add -A -f
+            git commit -m "Add KHPAL GPS project files"
+            git push
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Prepare
+        run: |
+          touch local.properties
+          chmod +x ./gradlew
+
+      # Free version: key-less maps (OpenStreetMap / Esri / OpenTopoMap). Works on every phone.
+      - name: Build FOSS APK
+        run: ./gradlew assembleFossDebug --stacktrace
+
+      # Google Maps version: uses the Google Maps key that is in AndroidManifest.xml.
+      # If it fails, the FOSS APK above is still delivered.
+      - name: Build Google Maps APK
+        continue-on-error: true
+        run: ./gradlew assembleFullDebug --stacktrace
+
+      - name: Collect APKs
+        run: |
+          mkdir -p out
+          VER=$(grep "def tagName" app/build.gradle | sed -E "s/.*'([^']+)'.*/\1/")
+          for f in $(find app/build/outputs/apk -name '*.apk'); do
+            flavor=$(echo "$f" | grep -o -E 'foss|full' | head -n1)
+            cp "$f" "out/KHPAL-GPS-${VER}-${flavor}.apk"
+          done
+          ls -la out
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: KHPAL-GPS-apks
+          path: out/*.apk
+
+      - name: Publish to GitHub Releases
+        if: ${{ inputs.publish_release }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VER=$(grep "def tagName" app/build.gradle | sed -E "s/.*'([^']+)'.*/\1/")
+          TAG="v${VER}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/*.apk --clobber
+          else
+            gh release create "$TAG" out/*.apk --title "KHPAL GPS ${VER}" \
+              --notes "KHPAL GPS ${VER} by MK_MANDOKHAIL. Install the *-foss.apk (works everywhere) or the *-full.apk (Google Maps). Uninstall older builds first."
+          fi
