@@ -4,6 +4,7 @@ package io.github.jqssun.gpssetter.xposed
 
 import android.annotation.SuppressLint
 import android.location.Location
+import android.location.LocationManager
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -271,6 +272,55 @@ object LocationHook {
         return loc
     }
 
+    // ------------------------------------------------------------------ ask Android (not the app)
+
+    private val glkMethod: Method? by lazy {
+        try {
+            LocationManager::class.java.getMethod("getLastKnownLocation", String::class.java)
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    /** What Android itself knows for [provider] (calls the original method, not our hook). */
+    private fun androidLast(lm: Any?, provider: String?): Location? {
+        if (provider.isNullOrEmpty() || lm == null) return null
+        val m = glkMethod ?: return null
+        return try {
+            XposedBridge.invokeOriginalMethod(m, lm, arrayOf<Any?>(provider)) as Location?
+        } catch (ignored: Throwable) {
+            null
+        }
+    }
+
+    private fun ageMs(loc: Location): Long =
+        (SystemClock.elapsedRealtimeNanos() - loc.elapsedRealtimeNanos) / 1_000_000L
+
+    private const val STALE_MS = 120_000L
+
+    /** The freshest real location Android has from any provider other than [skip]. */
+    private fun bestOther(lm: Any?, skip: String?): Location? {
+        var best: Location? = null
+        for (p in listOf(NETWORK, PASSIVE, FUSED)) {
+            if (p == skip) continue
+            val loc = androidLast(lm, p) ?: continue
+            if (best == null || loc.elapsedRealtimeNanos > best.elapsedRealtimeNanos) best = loc
+        }
+        return best
+    }
+
+    private fun networkEnabled(lm: Any?): Boolean = try {
+        (lm as LocationManager).isProviderEnabled(NETWORK)
+    } catch (ignored: Throwable) {
+        false
+    }
+
+    /** GPS has no fix, or only an old one (for example indoors). */
+    private fun gpsDead(lm: Any?): Boolean {
+        val loc = androidLast(lm, GPS) ?: return true
+        return ageMs(loc) > STALE_MS
+    }
+
     // ------------------------------------------------------------------ app-process hooks
 
     private fun hookGetter(name: String, value: (Location, MockConfig, Live) -> Any?) {
@@ -341,13 +391,24 @@ object LocationHook {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         try {
                             if (!active()) return
+                            val lm = param.thisObject
                             val requested = param.args[0] as String?
-                            var origin: Location? = null
-                            try {
-                                origin = XposedBridge.invokeOriginalMethod(param.method, param.thisObject, param.args) as Location?
-                            } catch (ignored: Throwable) {
+                            var effective = requested
+                            // 1. what Android has for the provider the app asked for
+                            var origin: Location? = androidLast(lm, requested)
+                            // 2. if that is missing or old, take the freshest provider Android really has
+                            if (origin == null || ageMs(origin) > STALE_MS) {
+                                val other = bestOther(lm, requested)
+                                if (other != null && (origin == null || other.elapsedRealtimeNanos > origin.elapsedRealtimeNanos)) {
+                                    origin = other
+                                }
                             }
-                            val built = buildLocation(origin, requested, "getLastKnownLocation")
+                            // 3. nothing at all, and the app asked for gps while gps is not working: do not claim gps
+                            if (origin == null && requested == GPS && networkEnabled(lm) && gpsDead(lm)) {
+                                val last = lastRealProvider
+                                effective = if (isReal(last) && last != GPS) last else NETWORK
+                            }
+                            val built = buildLocation(origin, effective, "getLastKnownLocation")
                             if (built != null) param.result = built
                         } catch (t: Throwable) {
                             log("getLastKnownLocation failed: $t")
@@ -357,6 +418,31 @@ object LocationHook {
             )
         } catch (t: Throwable) {
             log("getLastKnownLocation not hooked: $t")
+        }
+
+        // An app that asks for "gps" while gps has no fix would wait for ever. Send that request to the
+        // network provider instead, so the provider follows what Android can really deliver.
+        for (name in listOf("requestLocationUpdates", "requestSingleUpdate", "getCurrentLocation")) {
+            try {
+                XposedBridge.hookAllMethods(LocationManager::class.java, name, object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) {
+                        try {
+                            if (!active()) return
+                            val first = param.args.getOrNull(0) as? String ?: return
+                            if (first != GPS) return
+                            val lm = param.thisObject
+                            if (networkEnabled(lm) && gpsDead(lm)) {
+                                param.args[0] = NETWORK
+                                log("REDIRECT $name: app asked gps, gps has no fix -> network")
+                            }
+                        } catch (t: Throwable) {
+                            log("$name redirect failed: $t")
+                        }
+                    }
+                })
+            } catch (t: Throwable) {
+                log("$name not hooked: $t")
+            }
         }
     }
 
