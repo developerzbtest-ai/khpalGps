@@ -57,18 +57,23 @@ jobs:
           echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" >> local.properties
           chmod +x ./gradlew
 
-      - name: Get SHA-1 Fingerprint
-        run: ./gradlew signingReport
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+          echo "KEYSTORE_FILE=${{ github.workspace }}/release.keystore" >> $GITHUB_ENV
+          echo "KEYSTORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
+          echo "KEY_ALIAS=${{ secrets.KEY_ALIAS }}" >> $GITHUB_ENV
+          echo "KEY_PASSWORD=${{ secrets.KEY_PASSWORD }}" >> $GITHUB_ENV
 
       # Free version: key-less maps (OpenStreetMap / Esri / OpenTopoMap). Works on every phone.
       - name: Build FOSS APK
-        run: ./gradlew assembleFossDebug --stacktrace
+        run: ./gradlew assembleFossRelease --stacktrace
 
       # Google Maps version: uses the Google Maps key that is in AndroidManifest.xml.
       # If it fails, the FOSS APK above is still delivered.
       - name: Build Google Maps APK
         continue-on-error: true
-        run: ./gradlew assembleFullDebug --stacktrace
+        run: ./gradlew assembleFullRelease --stacktrace
 
       - name: Collect APKs
         run: |
