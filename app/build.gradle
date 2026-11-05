@@ -15,7 +15,7 @@ android {
         applicationId "com.khpalgps.zb"
         minSdk 27
         targetSdk 34
-        versionCode 7
+        versionCode 101
         versionName tagName
         // testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "TAG_NAME", "\"${tagName}\"")
@@ -47,8 +47,8 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled true
-            shrinkResources true
+            minifyEnabled false
+            shrinkResources false
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (signingConfigs.release.storeFile != null) {
                 signingConfig signingConfigs.release
