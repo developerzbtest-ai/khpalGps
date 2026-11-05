@@ -57,6 +57,9 @@ jobs:
           echo "MAPS_API_KEY=${{ secrets.MAPS_API_KEY }}" >> local.properties
           chmod +x ./gradlew
 
+      - name: Get SHA-1 Fingerprint
+        run: ./gradlew signingReport
+
       # Free version: key-less maps (OpenStreetMap / Esri / OpenTopoMap). Works on every phone.
       - name: Build FOSS APK
         run: ./gradlew assembleFossDebug --stacktrace
