@@ -282,12 +282,65 @@ object LocationHook {
         }
     }
 
-    /** What Android itself knows for [provider] (calls the original method, not our hook). */
+    /**
+     * Marker for a Location that the system-server hook had to INVENT because Android itself had no
+     * location at all. The app-process hook must not mistake it for "Android's result".
+     * Nothing is added to the Location: the last 8 digits of elapsedRealtimeNanos (a shift of at most
+     * 100 ms, never looked at by anyone) are set to one of 101 fixed values. A real location matches
+     * by chance about 1 time in 1,000,000; the only effect is that this one call falls back to
+     * another provider.
+     */
+    private const val MARK_MOD = 100_000_000L
+    private val MARKS = longArrayOf(
+        5249378L, 5424816L, 5719367L, 5822392L, 6710262L,
+        6788043L, 9387671L, 9840690L, 10050701L, 10967661L,
+        11404382L, 11752721L, 12511689L, 13442888L, 14109332L,
+        14149031L, 14922164L, 18546975L, 19049064L, 20750162L,
+        23108613L, 23976176L, 24289246L, 25483638L, 25507541L,
+        25912758L, 28471466L, 28835090L, 28858147L, 29162046L,
+        29604342L, 31355668L, 31772866L, 33345490L, 33538259L,
+        35121897L, 36021208L, 37048702L, 38479083L, 39817231L,
+        41008728L, 41328710L, 42906327L, 45015399L, 45714334L,
+        45794132L, 46251995L, 49943690L, 50810316L, 51009621L,
+        53492561L, 54290031L, 56458712L, 57429512L, 58473837L,
+        58718552L, 61600230L, 61860429L, 63052473L, 63813325L,
+        64373382L, 65086792L, 66500222L, 67111661L, 67141722L,
+        67233211L, 67249817L, 69393609L, 69942242L, 70977789L,
+        71737513L, 72333093L, 72351223L, 72857054L, 73188256L,
+        75133030L, 75407387L, 75782151L, 78625202L, 79109102L,
+        79225193L, 80174072L, 80747514L, 82422271L, 82678957L,
+        83193440L, 83939992L, 83975443L, 84098707L, 84173757L,
+        90836242L, 91112648L, 92798052L, 93003143L, 94562678L,
+        96419906L, 96590828L, 98345494L, 99220757L, 99863527L,
+        99907406L
+    )
+    private val MARK_SET: Set<Long> = MARKS.toHashSet()
+
+    private fun isSynthetic(loc: Location): Boolean = try {
+        MARK_SET.contains(loc.elapsedRealtimeNanos % MARK_MOD)
+    } catch (ignored: Throwable) {
+        false
+    }
+
+    private fun markSynthetic(loc: Location) {
+        val t = loc.elapsedRealtimeNanos
+        var base = t - (t % MARK_MOD)
+        val mark = MARKS[rnd.nextInt(MARKS.size)]
+        if (base + mark > t) base -= MARK_MOD // never in the future
+        loc.elapsedRealtimeNanos = base + mark
+    }
+
+    /**
+     * What Android itself really knows for [provider] (calls the original method, not our hook).
+     * A Location invented by the system hook (no real Android result behind it) counts as "nothing",
+     * so the same provider rules apply whether "Hook system location" is on or off.
+     */
     private fun androidLast(lm: Any?, provider: String?): Location? {
         if (provider.isNullOrEmpty() || lm == null) return null
         val m = glkMethod ?: return null
         return try {
-            XposedBridge.invokeOriginalMethod(m, lm, arrayOf<Any?>(provider)) as Location?
+            val loc = XposedBridge.invokeOriginalMethod(m, lm, arrayOf<Any?>(provider)) as Location?
+            if (loc != null && isSynthetic(loc)) null else loc
         } catch (ignored: Throwable) {
             null
         }
@@ -318,6 +371,9 @@ object LocationHook {
     /** GPS has no fix, or only an old one (for example indoors). */
     private fun gpsDead(lm: Any?): Boolean {
         val loc = androidLast(lm, GPS) ?: return true
+        // with "Hook system location" ON, Android may answer a gps request with another provider's
+        // location: that is not a working gps
+        if (loc.provider != GPS) return true
         return ageMs(loc) > STALE_MS
     }
 
@@ -466,6 +522,82 @@ object LocationHook {
         return null
     }
 
+    /** Android 11: the provider is inside a LocationRequest, so build the same kind of request as getLastKnownLocation does. */
+    private fun requestFor(template: Any, provider: String): Any? = try {
+        XposedHelpers.callStaticMethod(template.javaClass, "createFromDeprecatedProvider", provider, 0L, 0f, true)
+    } catch (ignored: Throwable) {
+        null
+    }
+
+    /**
+     * System side twin of bestOther(): the freshest REAL location Android has from a provider other
+     * than [requested]. The original method is called again with the provider swapped (not our hook,
+     * so nothing is mocked here). Works when the provider is a String argument (newer Android) or
+     * inside a LocationRequest argument (Android 11). Returns null if neither is found or Android
+     * has nothing.
+     */
+    private fun systemOtherProviders(m: Method, target: Any?, args: Array<Any?>, requested: String?): Location? {
+        var idx = -1
+        var viaRequest = false
+        for (i in args.indices) {
+            val a = args[i]
+            if (a is String && knownProviders.contains(a)) {
+                idx = i
+                break
+            }
+        }
+        if (idx < 0) {
+            for (i in args.indices) {
+                val a = args[i]
+                if (a != null && a.javaClass.name == "android.location.LocationRequest") {
+                    idx = i
+                    viaRequest = true
+                    break
+                }
+            }
+        }
+        if (idx < 0) return null
+        var best: Location? = null
+        for (p in listOf(NETWORK, PASSIVE, FUSED)) {
+            if (p == requested) continue
+            val a = args.copyOf()
+            if (viaRequest) {
+                a[idx] = requestFor(args[idx]!!, p) ?: continue
+            } else {
+                a[idx] = p
+            }
+            var loc: Location? = null
+            try {
+                loc = XposedBridge.invokeOriginalMethod(m, target, a) as? Location
+            } catch (ignored: Throwable) {
+            }
+            if (loc == null) continue
+            if (best == null || loc.elapsedRealtimeNanos > best.elapsedRealtimeNanos) best = loc
+        }
+        return best
+    }
+
+    /**
+     * A location reported by a provider, as the system service receives it. Android 11: a Location.
+     * Newer Android: a LocationResult (a wrapper holding a list of Locations). Returns the mocked
+     * replacement, or null when [a] is neither.
+     */
+    private fun mockReportedArg(a: Any?, path: String): Any? {
+        if (a is Location) return buildLocation(a, null, path)
+        if (a != null && a.javaClass.name == "android.location.LocationResult") {
+            val list = XposedHelpers.callMethod(a, "asList") as? List<*> ?: return null
+            val out = ArrayList<Location>()
+            for (e in list) {
+                val l = e as? Location ?: continue
+                val b = buildLocation(l, null, path) ?: continue
+                out.add(b)
+            }
+            if (out.isEmpty()) return null
+            return XposedHelpers.callStaticMethod(a.javaClass, "create", out)
+        }
+        return null
+    }
+
     private fun safeHook(what: String, block: () -> Unit) {
         try {
             block()
@@ -497,10 +629,23 @@ object LocationHook {
                             override fun afterHookedMethod(param: MethodHookParam) {
                                 try {
                                     if (!systemActive()) return
-                                    val built = buildLocation(
-                                        param.result as? Location, requestedProvider(param.args), "system.getLastLocation"
-                                    )
-                                    if (built != null) param.result = built
+                                    val requested = requestedProvider(param.args)
+                                    // 1. what Android has for the provider the app asked for
+                                    var origin = param.result as? Location
+                                    // 2. if that is missing or old, take the freshest provider Android really has
+                                    if (origin == null || ageMs(origin) > STALE_MS) {
+                                        val other = systemOtherProviders(m, param.thisObject, param.args, requested)
+                                        if (other != null && (origin == null || other.elapsedRealtimeNanos > origin.elapsedRealtimeNanos)) {
+                                            origin = other
+                                        }
+                                    }
+                                    val built = buildLocation(origin, requested, "system.getLastLocation")
+                                    if (built != null) {
+                                        // Android had nothing at all: mark the invented Location so the
+                                        // app-process hook does not treat it as Android's own result
+                                        if (origin == null) markSynthetic(built)
+                                        param.result = built
+                                    }
                                 } catch (t: Throwable) {
                                     log("system.getLastLocation failed: $t")
                                 }
@@ -563,6 +708,49 @@ object LocationHook {
                         }
                     })
             }
+        }
+
+        // Android 11 and newer: live updates no longer go through Receiver. Every location reported by
+        // a provider arrives in LocationProviderManager.onReportLocation (Location on Android 11,
+        // LocationResult on newer versions). Each hooked method is written to the log.
+        safeHook("LocationProviderManager.onReportLocation") {
+            var hooked = 0
+            for (cn in listOf(
+                "com.android.server.location.LocationProviderManager",
+                "com.android.server.location.provider.LocationProviderManager"
+            )) {
+                val lc: Class<*> = try {
+                    XposedHelpers.findClass(cn, cl)
+                } catch (t: Throwable) {
+                    continue
+                }
+                for (mm in lc.declaredMethods) {
+                    if (mm.name != "onReportLocation") continue
+                    try {
+                        XposedBridge.hookMethod(mm, object : XC_MethodHook() {
+                            override fun beforeHookedMethod(param: MethodHookParam) {
+                                try {
+                                    if (!systemActive()) return
+                                    for (i in param.args.indices) {
+                                        val r = mockReportedArg(param.args[i], "system.onReportLocation")
+                                        if (r != null) {
+                                            param.args[i] = r
+                                            break
+                                        }
+                                    }
+                                } catch (t: Throwable) {
+                                    log("onReportLocation failed: $t")
+                                }
+                            }
+                        })
+                        hooked++
+                        log("hooked $cn.onReportLocation(" + mm.parameterTypes.joinToString { it.simpleName } + ")")
+                    } catch (t: Throwable) {
+                        log("onReportLocation not hooked ($cn): $t")
+                    }
+                }
+            }
+            if (hooked == 0) log("LocationProviderManager.onReportLocation not found")
         }
     }
 
