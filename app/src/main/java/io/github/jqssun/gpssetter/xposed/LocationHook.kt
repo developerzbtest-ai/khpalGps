@@ -18,6 +18,7 @@ import org.lsposed.hiddenapibypass.HiddenApiBypass
 import java.lang.reflect.Method
 import java.util.Random
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -64,8 +65,8 @@ object LocationHook {
     private var nextOffsetAt = 0L
 
     // diagnostics
-    @Volatile private var lastLogKey = ""
-    @Volatile private var lastLogAt = 0L
+    private val logSeen = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    @Volatile private var lastSwitchLogAt = 0L
     @Volatile private var lastInjected: String? = null
     @Volatile private var mockFlagLogged = false
 
@@ -104,8 +105,11 @@ object LocationHook {
             )
         }
 
+        // a jump of more than ~1 km (teleport) re-rolls the jitter with the new latitude; normal
+        // movement does not, so the offset interval keeps working
+        val jumped = p != null && (abs(p.lat - c.lat) > 0.01 || abs(p.lng - c.lng) > 0.01)
         val offsetSettingsChanged = p == null || p.radius != c.radius ||
-            p.intervalSec != c.intervalSec || p.intervalRandSec != c.intervalRandSec
+            p.intervalSec != c.intervalSec || p.intervalRandSec != c.intervalRandSec || jumped
         if (c.radius <= 0.0) {
             if (l.dLat != 0.0 || l.dLng != 0.0) l = l.copy(dLat = 0.0, dLng = 0.0)
             nextOffsetAt = 0L
@@ -174,8 +178,11 @@ object LocationHook {
 
     private fun isReal(p: String?) = !p.isNullOrEmpty() && p != PASSIVE
 
-    private fun resolveProvider(origin: String?, requested: String?): Resolved {
+    private fun resolveProvider(origin: String?, requested: String?, originSynthetic: Boolean): Resolved {
         if (isReal(origin)) {
+            // a Location that was invented (no real Android result behind it) keeps its label,
+            // but must never become the "last real provider"
+            if (originSynthetic) return Resolved(origin!!, "origin-synthetic")
             lastRealProvider = origin
             return Resolved(origin!!, "origin")
         }
@@ -190,13 +197,19 @@ object LocationHook {
 
     private fun logProvider(path: String, received: String?, requested: String?, r: Resolved) {
         val now = SystemClock.elapsedRealtime()
-        val key = "$path|$received|$requested|${r.provider}|${r.source}"
         val prev = lastInjected
-        if (prev != null && prev != r.provider) log("PROVIDER SWITCH $prev -> ${r.provider}")
         lastInjected = r.provider
-        if (key != lastLogKey || now - lastLogAt > 10_000L) {
-            lastLogKey = key
-            lastLogAt = now
+        // at most one PROVIDER SWITCH line every 2 s
+        if (prev != null && prev != r.provider && now - lastSwitchLogAt > 2_000L) {
+            lastSwitchLogAt = now
+            log("PROVIDER SWITCH $prev -> ${r.provider}")
+        }
+        // the same situation is written at most once every 10 s
+        val key = "$path|$received|$requested|${r.provider}|${r.source}"
+        val seen = logSeen[key]
+        if (seen == null || now - seen > 10_000L) {
+            if (logSeen.size > 200) logSeen.clear()
+            logSeen[key] = now
             log("path=$path received=${received ?: "none"} requested=${requested ?: "none"} " +
                 "lastReal=${lastRealProvider ?: "none"} injected=${r.provider} (${r.source})")
         }
@@ -214,12 +227,23 @@ object LocationHook {
 
     // ------------------------------------------------------------------ build
 
+    /** Latitude kept inside [-90, 90]. */
+    private fun outLat(c: MockConfig, l: Live): Double = (c.lat + l.dLat).coerceIn(-90.0, 90.0)
+
+    /** Longitude wrapped into [-180, 180]. */
+    private fun outLng(c: MockConfig, l: Live): Double {
+        var lng = c.lng + l.dLng
+        if (lng > 180.0 || lng < -180.0) lng = ((lng + 180.0) % 360.0 + 360.0) % 360.0 - 180.0
+        return lng
+    }
+
     @SuppressLint("NewApi")
     private fun buildLocation(origin: Location?, requested: String?, path: String): Location? {
         val c = cfg ?: return null
         val l = live
         val originProvider = try { origin?.provider } catch (ignored: Throwable) { null }
-        val res = resolveProvider(originProvider, requested)
+        val originSynthetic = origin != null && isSynthetic(origin)
+        val res = resolveProvider(originProvider, requested, originSynthetic)
         logProvider(path, originProvider, requested, res)
 
         val loc = Location(res.provider)
@@ -234,8 +258,8 @@ object LocationHook {
             loc.elapsedRealtimeNanos = SystemClock.elapsedRealtimeNanos()
         }
 
-        loc.latitude = c.lat + l.dLat
-        loc.longitude = c.lng + l.dLng
+        loc.latitude = outLat(c, l)
+        loc.longitude = outLng(c, l)
         loc.accuracy = accuracyFor(res.provider, c, l)
 
         loc.altitude = when {
@@ -269,6 +293,9 @@ object LocationHook {
                 log("unable to clear mock flag (a new Location is not marked as mock anyway): $e")
             }
         }
+        // no real Android location behind this one: mark it, so a later copy of it
+        // (Location.set) is recognised and never counted as a real provider
+        if (origin == null) markSynthetic(loc)
         return loc
     }
 
@@ -402,8 +429,8 @@ object LocationHook {
     private fun installAppHooks(cl: ClassLoader?, pkg: String) {
         log("hooking app process $pkg")
 
-        hookGetter("getLatitude") { _, c, l -> c.lat + l.dLat }
-        hookGetter("getLongitude") { _, c, l -> c.lng + l.dLng }
+        hookGetter("getLatitude") { _, c, l -> outLat(c, l) }
+        hookGetter("getLongitude") { _, c, l -> outLng(c, l) }
         hookGetter("getAccuracy") { loc, c, l -> accuracyFor(loc.provider, c, l) }
         hookGetter("getAltitude") { _, c, l -> if (c.alt != null) l.alt else null }
         hookGetter("hasAltitude") { _, c, _ -> if (c.alt != null) true else null }
@@ -641,9 +668,9 @@ object LocationHook {
                                     }
                                     val built = buildLocation(origin, requested, "system.getLastLocation")
                                     if (built != null) {
-                                        // Android had nothing at all: mark the invented Location so the
-                                        // app-process hook does not treat it as Android's own result
-                                        if (origin == null) markSynthetic(built)
+                                        // when Android had nothing at all, buildLocation has already marked
+                                        // the invented Location, so the app-process hook does not treat it
+                                        // as Android's own result
                                         param.result = built
                                     }
                                 } catch (t: Throwable) {
